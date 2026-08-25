@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rhode Island Router</title>
+    <title>Cargo-Guard — Rhode Island Cold-Chain Router</title>
+    <meta name="description" content="Temperature-aware cold-chain routing for Rhode Island powered by FortyGuard tOS thermal intelligence.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <link rel="stylesheet" href="/style.css">
 </head>
@@ -11,24 +15,131 @@
     <div id="container">
         <div id="map"></div>
         <div id="sidebar">
-            <h2>🗺 RI Router</h2>
-            <div class="instructions">
-                Click on the map to set points:<br>
-                1st click = <span style="color: #22c55e; font-weight: bold;">Source</span><br>
-                2nd click = <span style="color: #ef4444; font-weight: bold;">Destination</span><br>
-                3rd click = Reset
+
+            <!-- Header -->
+            <div id="sidebar-header">
+                <div id="logo">
+                    <span id="logo-icon">🛡️</span>
+                    <div>
+                        <h1>Cargo-Guard</h1>
+                        <div id="graph-meta">Loading network…</div>
+                    </div>
+                </div>
             </div>
-            
-            <div id="status">Ready</div>
-            
+
+            <!-- Routing Mode -->
+            <div id="mode-section">
+                <div class="section-label">Routing Mode</div>
+                <div id="mode-toggle">
+                    <button class="mode-btn active" data-mode="shortest" id="btn-shortest">
+                        📏 Shortest
+                    </button>
+                    <button class="mode-btn" data-mode="fastest" id="btn-fastest">
+                        ⚡ Fastest
+                    </button>
+                    <button class="mode-btn" data-mode="temp_safe" id="btn-temp-safe">
+                        🌡️ Temp-Safe
+                    </button>
+                </div>
+            </div>
+
+            <!-- Cargo Profile & AI Agent Section -->
+            <div id="cargo-section">
+                <div class="section-label">📦 Cargo Profile (AI-Driven)</div>
+                <div class="cargo-select-wrapper">
+                    <select id="cargo-select">
+                        <option value="vaccines_biologics">💉 Pharmaceuticals & Biologics (2°C–8°C)</option>
+                        <option value="frozen_seafood_icecream">🍦 Frozen Goods & Ice Cream (&lt;-12°C)</option>
+                        <option value="fresh_produce_berries">🥑 Fresh Produce & Berries (2°C–12°C)</option>
+                        <option value="dairy_chocolate">🧀 Dairy & Confectionery (4°C–16°C)</option>
+                        <option value="electronics_chemicals">⚡ Sensitive Electronics (10°C–28°C)</option>
+                        <option value="standard_freight">📦 Standard Dry Freight (Ambient)</option>
+                        <option value="custom">🤖 Custom / AI Agent Prompt…</option>
+                    </select>
+                </div>
+
+                <!-- Custom AI Prompt Box -->
+                <div id="custom-cargo-box" style="display: none;">
+                    <div class="ai-input-row">
+                        <input type="text" id="ai-cargo-prompt" placeholder="e.g. mRNA vaccines on dry ice, max 4°C..." />
+                        <button id="ai-parse-btn" title="Analyze with OpenAI Agent">🤖 Analyze</button>
+                    </div>
+                </div>
+
+                <!-- Active Cargo Specs Card -->
+                <div id="active-cargo-card">
+                    <div class="cargo-card-header">
+                        <span id="cargo-name">Pharmaceuticals & Biologics</span>
+                        <span id="cargo-category-badge" class="badge-strict">Strict</span>
+                    </div>
+                    <div class="cargo-specs-grid">
+                        <div class="spec-item">
+                            <span class="spec-label">Safe Range</span>
+                            <span class="spec-value" id="cargo-safe-range">2°C – 8°C</span>
+                        </div>
+                        <div class="spec-item">
+                            <span class="spec-label">Heat Trigger</span>
+                            <span class="spec-value" id="cargo-trigger">&gt; 22.0°C</span>
+                        </div>
+                        <div class="spec-item">
+                            <span class="spec-label">Sensitivity</span>
+                            <span class="spec-value" id="cargo-sensitivity">0.95 (High)</span>
+                        </div>
+                    </div>
+                    <div class="cargo-desc" id="cargo-desc">Strict cold chain (2°C to 8°C). Any prolonged ambient exposure above 22°C risks protein denaturation.</div>
+                </div>
+            </div>
+
+            <!-- Thermal Overlay Toggle -->
+            <div id="overlay-section">
+                <label class="toggle-row" for="thermal-toggle">
+                    <span class="toggle-label">🔥 Thermal Overlay</span>
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="thermal-toggle">
+                        <span class="slider"></span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Instructions -->
+            <div class="instructions">
+                <div class="instruction-step">
+                    <span class="step-badge step-1">1</span>
+                    Click map → set <strong>origin</strong>
+                </div>
+                <div class="instruction-step">
+                    <span class="step-badge step-2">2</span>
+                    Click map → set <strong>destination</strong>
+                </div>
+                <div class="instruction-step">
+                    <span class="step-badge step-3">3</span>
+                    Click again or press <strong>Reset</strong>
+                </div>
+            </div>
+
+            <!-- Status + Reset -->
+            <div id="status-bar">
+                <span id="status">Ready — click the map to begin</span>
+                <button id="reset-btn" title="Reset map" aria-label="Reset map">↺ Reset</button>
+            </div>
+
+            <!-- Loading spinner -->
+            <div id="loading" aria-live="polite">
+                <div class="spinner"></div>
+                <span>Finding routes…</span>
+            </div>
+
+            <!-- Routes -->
             <div id="routes-container">
-                <h3>Routes</h3>
+                <h2 id="routes-heading">Top Routes</h2>
                 <div id="routes-list"></div>
             </div>
+
         </div>
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
     <script src="/map.js"></script>
 </body>
 </html>
