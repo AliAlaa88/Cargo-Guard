@@ -40,6 +40,8 @@ class CargoProfile(BaseModel):
     routing_alpha: float = Field(0.08, ge=0.0, le=1.0, description="Cost penalty multiplier per °C excess")
     description: str = Field("", description="Human-readable description or handling instructions")
 
+    model_config = {"extra": "ignore"}
+
 
 def lookup_cargo_guidelines(query: str) -> dict:
     """

@@ -1,16 +1,16 @@
 // ── Map initialisation ────────────────────────────────────────────────────────
 const map = L.map('map').setView([41.5801, -71.4774], 10);
 
-// Bright colorful basemap for Rhode Island interior
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>',
+// OpenStreetMap tile layer (no API key required, no watermarks)
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
 }).addTo(map);
 
 // ── Route colours ─────────────────────────────────────────────────────────────
 const ROUTE_COLORS = ['#2563eb', '#d97706', '#9333ea'];
 
-// ── State ─────────────────────────────────────────────────────────────────────
+// -- State ---------------------------------------------------------------
 let sourceMarker       = null;
 let destMarker         = null;
 let routeLayers        = [];
@@ -20,6 +20,8 @@ let activeRouteIndex   = -1;
 let currentMode        = 'shortest';
 let activeCargoProfile = null;
 let builtinProfiles    = [];
+let lastRoutes         = [];          // cache for decision engine & reroute evaluator
+let lastDecision       = null;        // cache for Explain button
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const statusEl          = document.getElementById('status');
@@ -41,6 +43,20 @@ const cargoSafeRangeEl  = document.getElementById('cargo-safe-range');
 const cargoTriggerEl    = document.getElementById('cargo-trigger');
 const cargoSensitivityEl= document.getElementById('cargo-sensitivity');
 const cargoDescEl       = document.getElementById('cargo-desc');
+
+const decisionPanel     = document.getElementById('decision-panel');
+const decisionVerdict   = document.getElementById('decision-verdict');
+const decisionExplEl    = document.getElementById('decision-explanation');
+const explainBtn        = document.getElementById('explain-btn');
+const deadlineInput     = document.getElementById('deadline-input');
+
+const reroutePanel      = document.getElementById('reroute-panel');
+const rerouteCurrentSel = document.getElementById('reroute-current');
+const rerouteAltSel     = document.getElementById('reroute-alt');
+const rerouteEvalBtn    = document.getElementById('reroute-eval-btn');
+const rerouteResult     = document.getElementById('reroute-result');
+const tripProgressSlider= document.getElementById('trip-progress');
+const progressLabel     = document.getElementById('progress-label');
 
 // ── Cargo Profile Handlers ────────────────────────────────────────────────────
 async function loadCargoProfiles() {
@@ -253,9 +269,18 @@ function resetMap() {
     routeLayers.forEach(l => map.removeLayer(l));
     routeLayers = [];
     activeRouteIndex = -1;
+    lastRoutes = [];
+    lastDecision = null;
     routesContainerEl.classList.remove('visible');
     routesListEl.innerHTML = '';
     loadingEl.classList.remove('visible');
+    decisionPanel.classList.remove('visible');
+    decisionVerdict.innerHTML = '';
+    decisionExplEl.classList.add('hidden');
+    decisionExplEl.textContent = '';
+    reroutePanel.classList.remove('visible');
+    rerouteResult.classList.add('hidden');
+    rerouteResult.className = 'reroute-result hidden';
     setStatus('Ready — click the map to begin');
 }
 
@@ -264,6 +289,7 @@ async function findRoutes() {
     setStatus('Finding routes…');
     loadingEl.classList.add('visible');
     routesContainerEl.classList.remove('visible');
+    decisionPanel.classList.remove('visible');
 
     const src = sourceMarker.getLatLng();
     const dst = destMarker.getLatLng();
@@ -282,6 +308,11 @@ async function findRoutes() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Request failed');
 
+        lastRoutes = data.routes;
+
+        // Call decision engine immediately after getting routes
+        await runDecisionEngine(data.routes);
+
         displayRoutes(data.routes);
         setStatus(`${data.routes.length} route${data.routes.length !== 1 ? 's' : ''} found`);
     } catch (err) {
@@ -291,7 +322,181 @@ async function findRoutes() {
     }
 }
 
-// ── Display routes ────────────────────────────────────────────────────────────
+// -- Decision Engine call -------------------------------------------------
+async function runDecisionEngine(routes, explain = false) {
+    if (!activeCargoProfile || !routes.length) return;
+    const deadline = deadlineInput.value ? parseFloat(deadlineInput.value) : null;
+
+    try {
+        const res = await fetch('/route/decide', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                routes,
+                cargo_profile: activeCargoProfile,
+                deadline_minutes: deadline,
+                explain,
+            }),
+        });
+        if (!res.ok) {
+            let errMsg = `Decision engine HTTP ${res.status}`;
+            try { const errData = await res.json(); if (errData.error) errMsg = errData.error; } catch(_) {}
+            throw new Error(errMsg);
+        }
+        const data = await res.json();
+        lastDecision = data;
+        renderDecisionPanel(data, routes);
+        return data;
+    } catch (err) {
+        console.warn('Decision engine error:', err);
+    }
+}
+
+// -- Render decision panel ------------------------------------------------
+function renderDecisionPanel(data, routes) {
+    const d = data.decision;
+    const isOk = d.action === 'USE_ROUTE';
+
+    // Build verdict card
+    const warningsHtml = d.warnings && d.warnings.length
+        ? `<div class="verdict-warnings">${d.warnings.map(w =>
+            `<div class="verdict-warning-item">⚠ ${w}</div>`).join('')}</div>`
+        : '';
+
+    decisionVerdict.innerHTML = `
+        <div class="verdict-card">
+            <div class="verdict-action-row">
+                <span class="verdict-action-badge ${isOk ? 'verdict-use' : 'verdict-no-route'}">
+                    ${isOk ? '✓ Route Selected' : '⚠ No Feasible Route'}
+                </span>
+                <span class="verdict-selected">${d.selected_route_id || '—'}</span>
+            </div>
+            <div class="verdict-reason">${d.reason}</div>
+            ${warningsHtml}
+        </div>`;
+
+    // Show AI explanation if present
+    if (data.explanation) {
+        decisionExplEl.textContent = data.explanation;
+        decisionExplEl.classList.remove('hidden');
+    }
+
+    decisionPanel.classList.add('visible');
+}
+
+// -- Explain button -------------------------------------------------------
+explainBtn.addEventListener('click', async () => {
+    if (!lastRoutes.length) return;
+    explainBtn.disabled = true;
+    explainBtn.textContent = '✨ Loading…';
+    await runDecisionEngine(lastRoutes, true);
+    explainBtn.disabled = false;
+    explainBtn.textContent = '✨ Explain';
+});
+
+// -- Trip progress slider -------------------------------------------------
+tripProgressSlider.addEventListener('input', () => {
+    progressLabel.textContent = `${tripProgressSlider.value}%`;
+});
+
+// -- Reroute evaluator ----------------------------------------------------
+rerouteEvalBtn.addEventListener('click', async () => {
+    const curIdx = parseInt(rerouteCurrentSel.value);
+    const altIdx = parseInt(rerouteAltSel.value);
+    if (curIdx === altIdx) {
+        rerouteResult.className = 'reroute-result verdict-continue';
+        rerouteResult.innerHTML = '<strong>Select two different routes to compare.</strong>';
+        rerouteResult.classList.remove('hidden');
+        return;
+    }
+
+    const current = lastRoutes[curIdx];
+    const alt     = lastRoutes[altIdx];
+    const progress = parseFloat(tripProgressSlider.value);
+    const deadline = deadlineInput.value ? parseFloat(deadlineInput.value) : null;
+
+    rerouteEvalBtn.disabled = true;
+    rerouteEvalBtn.textContent = 'Evaluating…';
+
+    try {
+        const res = await fetch('/route/reroute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                current_route: current,
+                alternative_route: alt,
+                cargo_profile: activeCargoProfile,
+                trip_progress_pct: progress,
+                deadline_minutes: deadline,
+                explain: true,
+            }),
+        });
+        if (!res.ok) {
+            let errMsg = `Server returned ${res.status}`;
+            try { const errData = await res.json(); if (errData.error) errMsg = errData.error; } catch (_) {}
+            throw new Error(errMsg);
+        }
+        const data = await res.json();
+        renderRerouteResult(data);
+    } catch (err) {
+        rerouteResult.className = 'reroute-result verdict-continue';
+        rerouteResult.innerHTML = `<strong>⚠ ${err.message}</strong>`;
+        rerouteResult.classList.remove('hidden');
+    } finally {
+        rerouteEvalBtn.disabled = false;
+        rerouteEvalBtn.textContent = 'Evaluate Reroute';
+    }
+});
+
+function renderRerouteResult(data) {
+    const d = data.decision;
+    const t = d.tradeoff || {};
+    const action = d.action;   // REROUTE | CONTINUE | OPERATOR_REQUIRED
+    const urgency = d.urgency; // LOW | MEDIUM | HIGH | CRITICAL
+
+    const cls = action === 'REROUTE' ? 'verdict-reroute'
+               : action === 'OPERATOR_REQUIRED' ? 'verdict-operator'
+               : 'verdict-continue';
+
+    const badgeCls = action === 'REROUTE'   ? 'badge-reroute'
+                   : action === 'OPERATOR_REQUIRED' ? 'badge-operator'
+                   : 'badge-continue';
+
+    const etaDelta   = t.eta_delta_minutes != null ? (t.eta_delta_minutes >= 0 ? `+${t.eta_delta_minutes}` : `${t.eta_delta_minutes}`) : '—';
+    const expDelta   = t.exposure_delta_pct != null ? (t.exposure_delta_pct <= 0 ? `${t.exposure_delta_pct}%` : `+${t.exposure_delta_pct}%`) : '—';
+    const riskCur   = t.risk_levels ? t.risk_levels.current.toUpperCase()     : '—';
+    const riskAlt   = t.risk_levels ? t.risk_levels.alternative.toUpperCase() : '—';
+
+    const explanation = data.explanation
+        ? `<div class="reroute-reason-text" style="font-style:italic;color:#c4b5fd;margin-top:8px">${data.explanation}</div>`
+        : '';
+
+    rerouteResult.className = `reroute-result ${cls}`;
+    rerouteResult.innerHTML = `
+        <div class="reroute-verdict-header">
+            <span class="reroute-action-badge ${badgeCls}">${action.replace('_', ' ')}</span>
+            <span class="urgency-badge urgency-${urgency}">Urgency: ${urgency}</span>
+        </div>
+        <div class="reroute-tradeoff-grid">
+            <div class="tradeoff-item">
+                <span class="tradeoff-label">ETA Delta</span>
+                <span class="tradeoff-value">${etaDelta} min</span>
+            </div>
+            <div class="tradeoff-item">
+                <span class="tradeoff-label">Exposure</span>
+                <span class="tradeoff-value">${expDelta}</span>
+            </div>
+            <div class="tradeoff-item">
+                <span class="tradeoff-label">Risk</span>
+                <span class="tradeoff-value" style="font-size:0.64rem">${riskCur}→${riskAlt}</span>
+            </div>
+        </div>
+        <div class="reroute-reason-text">${d.reason}</div>
+        ${explanation}`;
+    rerouteResult.classList.remove('hidden');
+}
+
+// -- Display routes -------------------------------------------------------
 function displayRoutes(routes) {
     routeLayers.forEach(l => map.removeLayer(l));
     routeLayers = [];
@@ -313,35 +518,74 @@ function displayRoutes(routes) {
     }
 
     if (routeLayers[0]) map.fitBounds(routeLayers[0].getBounds(), { padding: [60, 60] });
-    routes.forEach((route, i) => buildRouteCard(route, i));
+
+    // Populate reroute evaluator selects
+    rerouteCurrentSel.innerHTML = '';
+    rerouteAltSel.innerHTML = '';
+    routes.forEach((r, i) => {
+        const label = `Route ${i + 1} (ETA: ${r.eta_minutes ?? r.duration_s ? Math.round((r.eta_minutes || r.duration_s/60)) : '?'} min)`;
+        rerouteCurrentSel.appendChild(new Option(label, i));
+        rerouteAltSel.appendChild(new Option(label, i));
+    });
+    if (routes.length > 1) rerouteAltSel.value = 1; // default alt = route 2
+    reroutePanel.classList.add('visible');
+    rerouteResult.classList.add('hidden');
+
+    // Get recommended route ID from last decision for badge
+    const recommendedId = lastDecision && lastDecision.decision
+        ? lastDecision.decision.selected_route_id : null;
+    const scoresMap = {};
+    if (lastDecision && lastDecision.decision && lastDecision.decision.scores) {
+        lastDecision.decision.scores.forEach(s => { scoresMap[s.route_id] = s; });
+    }
+
+    routes.forEach((route, i) => buildRouteCard(route, i, recommendedId, scoresMap));
     routesContainerEl.classList.add('visible');
 
-    // Ensure mask stays on top of thermal layer but routes are above mask
     if (maskLayer) maskLayer.bringToFront();
     routeLayers.forEach(l => l.bringToFront());
     bringPinsToFront();
 }
 
-// ── Build route card ──────────────────────────────────────────────────────────
-function buildRouteCard(route, i) {
+// -- Build route card (upgraded) ------------------------------------------
+function buildRouteCard(route, i, recommendedId, scoresMap) {
+    scoresMap = scoresMap || {};
     const color   = ROUTE_COLORS[i % ROUTE_COLORS.length];
     const distKm  = (route.distance_m / 1000).toFixed(1);
     const durText = formatDuration(route.duration_s);
     const hasTemp = route.avg_temp_c != null;
+    const score   = scoresMap[route.route_id];
+    const isRecommended = recommendedId && route.route_id === recommendedId;
 
     const card = document.createElement('div');
     card.className = 'route-item';
     card.id = `route-card-${i}`;
     card.style.setProperty('--route-color', color);
 
+    // Feasibility badge
+    const feasBadge = score
+        ? `<span class="route-feasibility-badge ${score.feasible ? 'feasible-yes' : 'feasible-no'}">${score.feasible ? 'Feasible' : 'Infeasible'}</span>`
+        : '';
+
+    // Score pill
+    const scorePill = score
+        ? `<span class="route-score-pill">Score: ${score.composite_score}</span>`
+        : '';
+
+    // Recommended / Best badge
+    const recBadge = isRecommended
+        ? `<span class="route-recommended-badge">🤖 Recommended</span>`
+        : (i === 0 && !recommendedId ? `<span class="route-badge">Best</span>` : '');
+
+    // Thermal section
     let thermalDetails = '';
     let riskBadge = '';
 
     if (hasTemp) {
         const exposureDegMin = route.thermal_exposure ?? 0;
-        const exposurePct = route.exposure_pct ?? 0;
-        const maxTemp = route.max_temp_c ?? route.avg_temp_c;
-        const stressScore = route.thermal_stress_score ?? 0;
+        const exposurePct    = route.exposure_pct ?? 0;
+        const maxTemp        = route.max_temp_c ?? route.avg_temp_c;
+        const stressScore    = route.thermal_stress_score ?? 0;
 
         thermalDetails = `
             <div class="route-stats thermal-row">
@@ -371,11 +615,33 @@ function buildRouteCard(route, i) {
             </div>`;
     }
 
+    // Infeasibility reasons
+    const infeasHtml = score && !score.feasible && score.infeasibility_reasons.length
+        ? `<div class="route-infeasibility">🚫 ${score.infeasibility_reasons.join(' · ')}</div>`
+        : '';
+
+    // Delta tags vs. recommended / best
+    let deltaHtml = '';
+    if (score && recommendedId && !isRecommended) {
+        const bestScore = scoresMap[recommendedId];
+        if (bestScore) {
+            const etaD = route.eta_minutes - bestScore.eta_minutes;
+            const expD = bestScore.thermal_exposure > 0
+                ? ((route.thermal_exposure - bestScore.thermal_exposure) / bestScore.thermal_exposure * 100)
+                : 0;
+            const etaTag = `<span class="delta-tag ${etaD > 0 ? 'worse' : 'better'}">${etaD > 0 ? '+' : ''}${etaD.toFixed(0)} min</span>`;
+            const expTag = `<span class="delta-tag ${expD > 0 ? 'worse' : 'better'}">${expD > 0 ? '+' : ''}${expD.toFixed(0)}% exposure</span>`;
+            deltaHtml = `<div class="route-delta-row">${etaTag}${expTag}</div>`;
+        }
+    }
+
     card.innerHTML = `
         <div class="route-header">
             <div class="route-dot"></div>
             <span class="route-label">Route ${i + 1}</span>
-            ${i === 0 ? '<span class="route-badge">Best</span>' : ''}
+            ${recBadge}
+            ${feasBadge}
+            ${scorePill}
         </div>
         <div class="route-stats">
             <div class="stat">

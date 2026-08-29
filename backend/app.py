@@ -7,6 +7,11 @@ from routing import find_routes
 from fortyguard_client import get_ri_heatmap
 from temp_grid import TempGrid
 from cost import shortest_cost, fastest_cost, temp_safe_cost
+from decision_engine import (
+    select_best_route, compare_routes, evaluate_tradeoff, should_reroute,
+    evaluate_departure_time, DepartureWindow,
+    route_score_to_dict, tradeoff_to_dict, reroute_decision_to_dict, departure_decision_to_dict,
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -191,6 +196,119 @@ def route():
             safe_threshold=safe_threshold,
             alpha=alpha,
             cargo_profile=active_profile.model_dump() if active_profile else None,
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+# ── Decision Engine endpoints ──────────────────────────────────────────────────
+
+@app.route("/route/decide", methods=["POST"])
+def route_decide():
+    """
+    Select the best route from pre-computed candidates using the deterministic
+    decision engine and optionally explain it with the AI agent.
+
+    POST body:
+    {
+      "routes": [ ... ],           # list of route dicts from /route
+      "cargo_profile": { ... },    # CargoProfile dict
+      "deadline_minutes": float,   # optional
+      "explain": true              # optional, triggers AI explanation
+    }
+    """
+    from cargo_profiles import CargoProfile
+    from agent import explain_route_decision
+
+    data = request.get_json(force=True, silent=True) or {}
+    routes = data.get("routes", [])
+    cargo_dict = data.get("cargo_profile")
+    deadline = data.get("deadline_minutes")
+    explain = bool(data.get("explain", False))
+
+    if not routes:
+        return jsonify(error="No routes provided"), 400
+    if not cargo_dict:
+        return jsonify(error="cargo_profile required"), 400
+
+    try:
+        cargo = CargoProfile(**cargo_dict)
+    except Exception as e:
+        return jsonify(error=f"Invalid cargo_profile: {e}"), 400
+
+    try:
+        deadline_f = float(deadline) if deadline is not None else None
+        decision = select_best_route(routes, cargo, deadline_minutes=deadline_f)
+        decision_dict = {
+            "selected_route_id": decision.selected_route_id,
+            "action": decision.action,
+            "reason": decision.reason,
+            "warnings": decision.warnings,
+            "scores": [route_score_to_dict(s) for s in decision.scores],
+        }
+
+        explanation = None
+        if explain:
+            explanation = explain_route_decision(cargo, decision_dict, routes)
+
+        return jsonify(
+            decision=decision_dict,
+            explanation=explanation,
+            cargo_profile=cargo.model_dump(),
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+@app.route("/route/reroute", methods=["POST"])
+def route_reroute():
+    """
+    Evaluate whether to reroute during an active trip.
+
+    POST body:
+    {
+      "current_route": { ... },      # current route dict with live thermal metrics
+      "alternative_route": { ... },  # candidate alternative route
+      "cargo_profile": { ... },      # CargoProfile dict
+      "trip_progress_pct": float,    # 0-100, how far along the trip
+      "deadline_minutes": float,     # optional remaining deadline
+      "explain": true                # optional AI alert
+    }
+    """
+    from cargo_profiles import CargoProfile
+    from agent import explain_reroute_decision
+
+    data = request.get_json(force=True, silent=True) or {}
+    current   = data.get("current_route")
+    alt       = data.get("alternative_route")
+    cargo_dict= data.get("cargo_profile")
+    progress  = float(data.get("trip_progress_pct", 0.0))
+    deadline  = data.get("deadline_minutes")
+    explain   = bool(data.get("explain", False))
+
+    if not current or not alt:
+        return jsonify(error="current_route and alternative_route required"), 400
+    if not cargo_dict:
+        return jsonify(error="cargo_profile required"), 400
+
+    try:
+        cargo = CargoProfile(**cargo_dict)
+    except Exception as e:
+        return jsonify(error=f"Invalid cargo_profile: {e}"), 400
+
+    try:
+        deadline_f = float(deadline) if deadline is not None else None
+        decision = should_reroute(current, alt, cargo, trip_progress_pct=progress, deadline_minutes=deadline_f)
+        decision_dict = reroute_decision_to_dict(decision)
+
+        explanation = None
+        if explain:
+            explanation = explain_reroute_decision(cargo, decision_dict, current, alt)
+
+        return jsonify(
+            decision=decision_dict,
+            explanation=explanation,
+            cargo_profile=cargo.model_dump(),
         )
     except Exception as e:
         return jsonify(error=str(e)), 500

@@ -90,6 +90,15 @@
                 </div>
             </div>
 
+            <!-- Delivery Deadline -->
+            <div id="deadline-section">
+                <div class="section-label">⏱ Delivery Deadline (optional)</div>
+                <div class="deadline-row">
+                    <input type="number" id="deadline-input" placeholder="e.g. 45" min="1" max="480" />
+                    <span class="deadline-unit">minutes from now</span>
+                </div>
+            </div>
+
             <!-- Thermal Overlay Toggle -->
             <div id="overlay-section">
                 <label class="toggle-row" for="thermal-toggle">
@@ -129,10 +138,41 @@
                 <span>Finding routes…</span>
             </div>
 
+            <!-- AI Decision Panel -->
+            <div id="decision-panel">
+                <div class="decision-header">
+                    <span class="decision-header-title">🤖 AI Decision</span>
+                    <button id="explain-btn" title="Get AI natural-language explanation">✨ Explain</button>
+                </div>
+                <div id="decision-verdict"></div>
+                <div id="decision-explanation" class="decision-explanation hidden"></div>
+            </div>
+
             <!-- Routes -->
             <div id="routes-container">
                 <h2 id="routes-heading">Top Routes</h2>
                 <div id="routes-list"></div>
+
+                <!-- Reroute Evaluator -->
+                <div id="reroute-panel">
+                    <div class="section-label" style="margin-bottom:10px">🔀 Reroute Evaluator</div>
+                    <div class="reroute-selects">
+                        <div class="reroute-select-group">
+                            <label>Current Route</label>
+                            <select id="reroute-current"></select>
+                        </div>
+                        <div class="reroute-select-group">
+                            <label>Alternative</label>
+                            <select id="reroute-alt"></select>
+                        </div>
+                    </div>
+                    <div class="reroute-progress-row">
+                        <label for="trip-progress">Trip Progress: <span id="progress-label">0%</span></label>
+                        <input type="range" id="trip-progress" min="0" max="100" value="0" step="5" />
+                    </div>
+                    <button id="reroute-eval-btn">Evaluate Reroute</button>
+                    <div id="reroute-result" class="reroute-result hidden"></div>
+                </div>
             </div>
 
         </div>
