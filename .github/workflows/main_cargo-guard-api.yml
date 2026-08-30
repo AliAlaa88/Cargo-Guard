@@ -29,6 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --target=".python_packages/lib/site-packages" -r backend/requirements.txt
+          cp -r backend/fortyguard_sdk/fortyguard .python_packages/lib/site-packages/fortyguard
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
