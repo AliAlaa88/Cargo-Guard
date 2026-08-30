@@ -37,7 +37,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # ── inject the local SDK onto sys.path ────────────────────────────────────────
-_SDK_ROOT = Path(r"D:\fortyguard\temperature-api-quickstart")
+# Points to the fortyguard_sdk git submodule (backend/fortyguard_sdk/)
+_SDK_ROOT = Path(__file__).parent / "fortyguard_sdk"
 if str(_SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(_SDK_ROOT))
 
@@ -65,6 +66,9 @@ HEATMAP_DATE = (date.today() - timedelta(days=1)).isoformat()
 
 # Cache path for the merged heatmap GeoJSON feature list
 HEATMAP_CACHE = Path(__file__).parent / "data" / "ri_heatmap_cache.json"
+
+# Zip bundle committed to the repo (20 MB compressed, extracted on first run)
+HEATMAP_ZIP = Path(__file__).parent.parent / "ri_heatmap_cache.zip"
 
 
 def _make_polygon_aoi(min_lat: float, min_lng: float,
@@ -148,6 +152,17 @@ def get_ri_heatmap(force_refresh: bool = False) -> list[dict]:
     """
     if not force_refresh and HEATMAP_CACHE.exists():
         print(f"[FortyGuard] Loading heatmap from cache ({HEATMAP_CACHE})")
+        with HEATMAP_CACHE.open() as f:
+            return json.load(f)
+
+    # Auto-extract from the committed zip bundle if available
+    if not force_refresh and HEATMAP_ZIP.exists():
+        import zipfile
+        print(f"[FortyGuard] Extracting heatmap from bundled zip ({HEATMAP_ZIP})…")
+        HEATMAP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(HEATMAP_ZIP) as zf:
+            zf.extract("ri_heatmap_cache.json", HEATMAP_CACHE.parent)
+        print(f"[FortyGuard] Extracted → {HEATMAP_CACHE}")
         with HEATMAP_CACHE.open() as f:
             return json.load(f)
 

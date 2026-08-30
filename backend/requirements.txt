@@ -5,4 +5,8 @@ flask-cors>=4.0
 shapely>=2.0
 scikit-learn
 python-dotenv
-requests
+requests>=2.31.0
+pandas>=2.1.0
+gunicorn>=21.0
+openai
+pydantic

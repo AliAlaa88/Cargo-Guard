@@ -1,0 +1,3 @@
+[submodule "backend/fortyguard_sdk"]
+	path = backend/fortyguard_sdk
+	url = https://github.com/FortyGuard-Tech/temperature-api-quickstart.git
