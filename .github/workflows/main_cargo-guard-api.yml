@@ -37,6 +37,8 @@ jobs:
           path: |
             .
             !antenv/
+          include-hidden-files: true
+
 
   deploy:
     runs-on: ubuntu-latest
