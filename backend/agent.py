@@ -244,10 +244,11 @@ def explain_route_decision(
         return route_decision.get("reason", "Route selected by deterministic engine.")
 
     try:
+        clean_routes = [{k: v for k, v in r.items() if k != "coords"} for r in all_routes]
         user_content = json.dumps({
             "cargo_profile": cargo_profile.model_dump(),
             "route_decision": route_decision,
-            "all_routes": all_routes,
+            "all_routes": clean_routes,
         }, indent=2)
 
         response = client.chat.completions.create(
@@ -291,11 +292,13 @@ def explain_reroute_decision(
         return reroute_decision.get("reason", "Reroute evaluated by deterministic engine.")
 
     try:
+        clean_current = {k: v for k, v in current_route.items() if k != "coords"} if current_route else {}
+        clean_alt = {k: v for k, v in alternative_route.items() if k != "coords"} if alternative_route else {}
         user_content = json.dumps({
             "cargo_profile": cargo_profile.model_dump(),
             "reroute_decision": reroute_decision,
-            "current_route": current_route,
-            "alternative_route": alternative_route,
+            "current_route": clean_current,
+            "alternative_route": clean_alt,
         }, indent=2)
 
         response = client.chat.completions.create(

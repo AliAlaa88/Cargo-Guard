@@ -310,11 +310,12 @@ async function findRoutes() {
 
         lastRoutes = data.routes;
 
-        // Call decision engine immediately after getting routes
-        await runDecisionEngine(data.routes);
-
+        // Render routes immediately on map and UI
         displayRoutes(data.routes);
         setStatus(`${data.routes.length} route${data.routes.length !== 1 ? 's' : ''} found`);
+
+        // Run decision engine asynchronously in the background
+        runDecisionEngine(data.routes);
     } catch (err) {
         setStatus(`⚠ ${err.message}`);
     } finally {
@@ -327,12 +328,15 @@ async function runDecisionEngine(routes, explain = false) {
     if (!activeCargoProfile || !routes.length) return;
     const deadline = deadlineInput.value ? parseFloat(deadlineInput.value) : null;
 
+    // Strip heavy coordinate arrays to keep network payload ultra-lightweight
+    const routesPayload = routes.map(({ coords, ...rest }) => rest);
+
     try {
         const res = await fetch('/route/decide', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                routes,
+                routes: routesPayload,
                 cargo_profile: activeCargoProfile,
                 deadline_minutes: deadline,
                 explain,
@@ -415,6 +419,10 @@ rerouteEvalBtn.addEventListener('click', async () => {
     const progress = parseFloat(tripProgressSlider.value);
     const deadline = deadlineInput.value ? parseFloat(deadlineInput.value) : null;
 
+    // Strip heavy coordinate arrays
+    const { coords: _c1, ...currentClean } = current || {};
+    const { coords: _c2, ...altClean } = alt || {};
+
     rerouteEvalBtn.disabled = true;
     rerouteEvalBtn.textContent = 'Evaluating…';
 
@@ -423,8 +431,8 @@ rerouteEvalBtn.addEventListener('click', async () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                current_route: current,
-                alternative_route: alt,
+                current_route: currentClean,
+                alternative_route: altClean,
                 cargo_profile: activeCargoProfile,
                 trip_progress_pct: progress,
                 deadline_minutes: deadline,

@@ -22,44 +22,64 @@ from decision_engine import (
     route_score_to_dict, tradeoff_to_dict, reroute_decision_to_dict, departure_decision_to_dict,
 )
 
+import threading
+
 app = Flask(__name__)
 CORS(app)
 
-# ── Startup: load graph ───────────────────────────────────────────────────────
-print("Loading graph, this may take a moment on first run…")
-G_multi = get_graph()
-print("Converting graph to DiGraph…")
-G = ox.convert.to_digraph(G_multi, weight="length")
-G_nodes = G.nodes  # keep a reference to avoid repeated attribute lookups
-print("Ready!")
-
-# ── Startup: load FortyGuard heatmap (cached on disk after first fetch) ───────
-print("Loading FortyGuard temperature heatmap…")
+# ── Global state (populated by background init thread) ────────────────────────
+G_multi = None
+G = None
+G_nodes = None
 HEATMAP_POINTS = []
-try:
-    heatmap_features = get_ri_heatmap()
-    TEMP_GRID = TempGrid(heatmap_features)
-    
-    # Pre-extract point coordinates [lat, lon, temp] for fast frontend rendering
-    for idx, feat in enumerate(heatmap_features):
-        if idx % 4 != 0:  # sample every 4th tile for high resolution with fast payload
-            continue
-        geom = feat.get("geometry", {})
-        props = feat.get("properties", {})
-        temp = props.get("average_temperature") or props.get("temperature")
-        if temp is not None and geom.get("type") == "Polygon":
-            coords = geom["coordinates"][0]
-            lons = [c[0] for c in coords]
-            lats = [c[1] for c in coords]
-            c_lat = sum(lats) / len(lats)
-            c_lon = sum(lons) / len(lons)
-            HEATMAP_POINTS.append([round(c_lat, 5), round(c_lon, 5), round(float(temp), 2)])
+TEMP_GRID = None
+_ready = False
+_init_error = None
 
-    print(f"Temperature grid ready ({len(heatmap_features)} tiles, {len(HEATMAP_POINTS)} display points).")
-except Exception as exc:
-    print(f"⚠ FortyGuard heatmap unavailable: {exc}")
-    TEMP_GRID = None
-    HEATMAP_POINTS = []
+def _background_init():
+    global G_multi, G, G_nodes, HEATMAP_POINTS, TEMP_GRID, _ready, _init_error
+    try:
+        print("Loading graph, this may take a moment on first run…")
+        G_multi = get_graph()
+        print("Converting graph to DiGraph…")
+        G = ox.convert.to_digraph(G_multi, weight="length")
+        G_nodes = G.nodes
+        print("Graph ready!")
+
+        print("Loading FortyGuard temperature heatmap…")
+        try:
+            heatmap_features = get_ri_heatmap()
+            TEMP_GRID = TempGrid(heatmap_features)
+            for idx, feat in enumerate(heatmap_features):
+                if idx % 4 != 0:
+                    continue
+                geom = feat.get("geometry", {})
+                props = feat.get("properties", {})
+                temp = props.get("average_temperature") or props.get("temperature")
+                if temp is not None and geom.get("type") == "Polygon":
+                    coords = geom["coordinates"][0]
+                    lons = [c[0] for c in coords]
+                    lats = [c[1] for c in coords]
+                    c_lat = sum(lats) / len(lats)
+                    c_lon = sum(lons) / len(lons)
+                    HEATMAP_POINTS.append([round(c_lat, 5), round(c_lon, 5), round(float(temp), 2)])
+            print(f"Temperature grid ready ({len(heatmap_features)} tiles, {len(HEATMAP_POINTS)} display points).")
+        except Exception as exc:
+            print(f"⚠ FortyGuard heatmap unavailable: {exc}")
+            TEMP_GRID = None
+            HEATMAP_POINTS = []
+
+        _ready = True
+        print("✅ App fully initialised.")
+    except Exception as exc:
+        _init_error = str(exc)
+        print(f"❌ Fatal init error: {exc}")
+
+# Start heavy init in background so gunicorn can serve requests immediately
+_init_thread = threading.Thread(target=_background_init, daemon=True)
+_init_thread.start()
+
+
 
 # ── Cost-function registry ─────────────────────────────────────────────────────
 def _resolve_cost(mode: str, safe_threshold: float = 20.0, alpha: float = 0.08):
@@ -96,6 +116,11 @@ def map_js():
 
 @app.route("/health")
 def health():
+    if not _ready:
+        return jsonify(
+            status="initializing",
+            error=_init_error,
+        ), 503
     return jsonify(
         status="ok",
         nodes=len(G.nodes),
@@ -104,9 +129,20 @@ def health():
     )
 
 
+def _require_ready():
+    """Return a 503 response if background init hasn't finished yet."""
+    if not _ready:
+        resp = jsonify(status="initializing", message="Server is warming up, please retry in ~30 seconds.")
+        resp.headers["Retry-After"] = "30"
+        return resp, 503
+    return None
+
+
 @app.route("/graph/info")
 def graph_info():
     """Metadata about the road network + RI boundary polygon for the frontend mask."""
+    err = _require_ready()
+    if err: return err
     return jsonify(get_graph_info(G_multi))
 
 
@@ -115,6 +151,8 @@ def temperature_heatmap():
     """
     Return the FortyGuard temperature points for the frontend thermal overlay.
     """
+    err = _require_ready()
+    if err: return err
     return jsonify(points=HEATMAP_POINTS)
 
 
@@ -169,6 +207,9 @@ def route():
     required = ("src_lat", "src_lng", "dst_lat", "dst_lng")
     if not data or not all(k in data for k in required):
         return jsonify(error="Missing coordinates"), 400
+
+    err = _require_ready()
+    if err: return err
 
     mode = data.get("mode", "shortest")
     safe_threshold = float(data.get("safe_threshold", 20.0))
@@ -231,6 +272,8 @@ def route_decide():
 
     data = request.get_json(force=True, silent=True) or {}
     routes = data.get("routes", [])
+    # Defensively strip heavy coordinate geometry
+    routes = [{k: v for k, v in r.items() if k != "coords"} for r in routes]
     cargo_dict = data.get("cargo_profile")
     deadline = data.get("deadline_minutes")
     explain = bool(data.get("explain", False))
@@ -290,6 +333,10 @@ def route_reroute():
     data = request.get_json(force=True, silent=True) or {}
     current   = data.get("current_route")
     alt       = data.get("alternative_route")
+    if current:
+        current = {k: v for k, v in current.items() if k != "coords"}
+    if alt:
+        alt = {k: v for k, v in alt.items() if k != "coords"}
     cargo_dict= data.get("cargo_profile")
     progress  = float(data.get("trip_progress_pct", 0.0))
     deadline  = data.get("deadline_minutes")
