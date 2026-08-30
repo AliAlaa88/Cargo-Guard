@@ -1,6 +1,15 @@
+import sys
+from pathlib import Path
+
+# Inject Azure App Service pre-built packages path if present
+_site_packages = Path(__file__).resolve().parent.parent / ".python_packages" / "lib" / "site-packages"
+if _site_packages.exists() and str(_site_packages) not in sys.path:
+    sys.path.insert(0, str(_site_packages))
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import osmnx as ox
+
 
 from graph_loader import get_graph, get_graph_info
 from routing import find_routes
