@@ -37,12 +37,21 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 # ── inject the local SDK onto sys.path ────────────────────────────────────────
-# Points to the fortyguard_sdk git submodule (backend/fortyguard_sdk/)
-_SDK_ROOT = Path(__file__).parent / "fortyguard_sdk"
-if str(_SDK_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SDK_ROOT))
+# Look for fortyguard SDK in submodule or sibling quickstart repository
+_CANDIDATE_SDK_PATHS = [
+    Path(__file__).parent / "fortyguard_sdk",
+    Path(__file__).resolve().parent.parent / "fortyguard_sdk",
+    Path(__file__).resolve().parents[1] / "temperature-api-quickstart",
+    Path(__file__).resolve().parents[2] / "temperature-api-quickstart",
+]
+for _p in _CANDIDATE_SDK_PATHS:
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from fortyguard import FortyGuardClient  # noqa: E402  (import after path fix)
+try:
+    from fortyguard import FortyGuardClient  # noqa: E402
+except ImportError:
+    FortyGuardClient = None
 
 # ── constants ─────────────────────────────────────────────────────────────────
 # Rhode Island bounding box (with small margin)
@@ -166,6 +175,11 @@ def get_ri_heatmap(force_refresh: bool = False) -> list[dict]:
         with HEATMAP_CACHE.open() as f:
             return json.load(f)
 
+    if FortyGuardClient is None:
+        raise ImportError(
+            "FortyGuard SDK could not be imported. Please ensure 'fortyguard_sdk' or "
+            "'temperature-api-quickstart' is available in your workspace."
+        )
     client = FortyGuardClient()
     features = _fetch_all_tiles(client)
 

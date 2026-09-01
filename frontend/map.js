@@ -152,6 +152,7 @@ async function fetchAndShowThermal() {
         if (thermalLayer) {
             map.addLayer(thermalLayer);
             if (maskLayer) maskLayer.bringToFront();
+            if (boundaryOutlineLayer) boundaryOutlineLayer.bringToFront();
             routeLayers.forEach(l => l.bringToFront());
             bringPinsToFront();
             return;
@@ -194,6 +195,7 @@ async function fetchAndShowThermal() {
 
         // Keep routes and mask on top
         if (maskLayer) maskLayer.bringToFront();
+        if (boundaryOutlineLayer) boundaryOutlineLayer.bringToFront();
         routeLayers.forEach(l => l.bringToFront());
         bringPinsToFront();
     } catch (err) {
@@ -203,33 +205,70 @@ async function fetchAndShowThermal() {
 }
 
 // ── Graph metadata & Rhode Island boundary mask ───────────────────────────────
+let boundaryOutlineLayer = null;
+
 async function loadGraphInfo() {
     try {
-        const res  = await fetch('/graph/info');
+        const res = await fetch('/graph/info');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const info = await res.json();
-        graphMetaEl.textContent =
-            `${info.place} · ${info.nodes.toLocaleString()} nodes · ${info.edges.toLocaleString()} edges`;
-        if (info.boundary) renderRhodeIslandMask(info.boundary);
-    } catch {
+        if (info.nodes && info.nodes > 0) {
+            graphMetaEl.textContent =
+                `${info.place} · ${info.nodes.toLocaleString()} nodes · ${info.edges.toLocaleString()} edges`;
+        } else {
+            graphMetaEl.textContent = `${info.place || 'Rhode Island, USA'} · Loading network…`;
+            setTimeout(loadGraphInfo, 2500);
+        }
+        if (info.boundary && !maskLayer) {
+            renderRhodeIslandMask(info.boundary);
+        }
+    } catch (err) {
         graphMetaEl.textContent = 'Rhode Island road network';
+        setTimeout(loadGraphInfo, 3000);
     }
 }
 loadGraphInfo();
 
 function renderRhodeIslandMask(geom) {
-    if (maskLayer) map.removeLayer(maskLayer);
-    const outerWorld = [[90,-180],[90,180],[-90,180],[-90,-180]];
+    if (maskLayer) { map.removeLayer(maskLayer); maskLayer = null; }
+    if (boundaryOutlineLayer) { map.removeLayer(boundaryOutlineLayer); boundaryOutlineLayer = null; }
+
+    const outerWorld = [[90, -180], [90, 180], [-90, 180], [-90, -180]];
     const holes = [];
     if (geom.type === 'Polygon') {
         holes.push(geom.coordinates[0].map(pt => [pt[1], pt[0]]));
     } else if (geom.type === 'MultiPolygon') {
-        geom.coordinates.forEach(poly => holes.push(poly[0].map(pt => [pt[1], pt[0]])));
+        geom.coordinates.forEach(poly => {
+            if (poly && poly.length > 0) {
+                holes.push(poly[0].map(pt => [pt[1], pt[0]]));
+            }
+        });
     }
+
+    // 1. Surrounding dark mask layer for non-operational areas
     maskLayer = L.polygon([outerWorld, ...holes], {
-        color: '#0284c7', weight: 2.5, opacity: 0.9,
-        fillColor: '#0b0f19', fillOpacity: 0.82,
+        stroke: false,
+        fillColor: '#0b1120',
+        fillOpacity: 0.65,
         interactive: false,
     }).addTo(map);
+
+    // 2. High-visibility state boundary line outlining Rhode Island
+    boundaryOutlineLayer = L.geoJSON(geom, {
+        style: {
+            color: '#38bdf8',
+            weight: 2.5,
+            opacity: 0.95,
+            dashArray: '5, 6',
+            fillOpacity: 0,
+        },
+        interactive: false,
+    }).addTo(map);
+
+    // Initial camera alignment to frame Rhode Island
+    if (boundaryOutlineLayer.getBounds().isValid()) {
+        map.fitBounds(boundaryOutlineLayer.getBounds(), { padding: [25, 25] });
+    }
 }
 
 // ── Custom marker icons ───────────────────────────────────────────────────────
@@ -551,6 +590,7 @@ function displayRoutes(routes) {
     routesContainerEl.classList.add('visible');
 
     if (maskLayer) maskLayer.bringToFront();
+    if (boundaryOutlineLayer) boundaryOutlineLayer.bringToFront();
     routeLayers.forEach(l => l.bringToFront());
     bringPinsToFront();
 }

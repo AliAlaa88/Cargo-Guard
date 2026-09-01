@@ -141,8 +141,6 @@ def _require_ready():
 @app.route("/graph/info")
 def graph_info():
     """Metadata about the road network + RI boundary polygon for the frontend mask."""
-    err = _require_ready()
-    if err: return err
     return jsonify(get_graph_info(G_multi))
 
 

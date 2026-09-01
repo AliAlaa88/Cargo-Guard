@@ -34,8 +34,17 @@ def get_boundary():
     return geo_interface
 
 
-def get_graph_info(G):
-    """Return a metadata dict about the loaded graph."""
+def get_graph_info(G=None):
+    """Return a metadata dict about the loaded graph and boundary."""
+    boundary = get_boundary()
+    if G is None:
+        return {
+            "place": PLACE_NAME,
+            "nodes": 0,
+            "edges": 0,
+            "ready": False,
+            "boundary": boundary
+        }
     nodes = G.nodes(data=True)
     lats = [d["y"] for _, d in nodes]
     lons = [d["x"] for _, d in nodes]
@@ -43,12 +52,13 @@ def get_graph_info(G):
         "place": PLACE_NAME,
         "nodes": len(G.nodes),
         "edges": len(G.edges),
+        "ready": True,
         "bbox": {
             "min_lat": round(min(lats), 6),
             "max_lat": round(max(lats), 6),
             "min_lng": round(min(lons), 6),
             "max_lng": round(max(lons), 6),
         },
-        "boundary": get_boundary()
+        "boundary": boundary
     }
 
